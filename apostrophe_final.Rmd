@@ -1,0 +1,154 @@
+---
+title: "Treatment Plan Comparison"
+subtitle: 'Take Home Challenge'
+author: "Apostrophe/Raja Jain"
+date: "5/24/2021"
+output:
+  ioslides_presentation: default
+  slidy_presentation: default
+  beamer_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+Sys.setenv(RETICULATE_PYTHON = "/Users/raja_/Documents/GitHub/apostrophe/venv/bin/python")
+library("reticulate")
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(glmnet)
+library(mlbench)
+library(survival)
+library(survminer)
+library(tidyverse)
+library(lmtest)
+library(lawstat)
+library(nortest)
+library(rstatix)
+library(knitr)
+library(ggpubr)
+library(MASS)
+library(bestglm)
+library(leaps)
+library(sjlabelled)
+library(caret)
+library(mltools)
+library(scales)
+library(polycor)
+
+py_install("pandas", envname = "venv")
+
+source_python("read_pickle.py")
+
+ab_test_data = read_pickle_file("ab_test_collection_df.pkl")
+target_treatment_group_data = read_pickle_file("target_treatment_group_data.pkl")
+
+ab_test_data$treatment_plan.group = unlist(ab_test_data$treatment_plan.group)
+par(mar=c(5,5,0,0))
+```
+
+## Goal
+- Explore the AB Test dateset and determine if the treatment group is correlated with shifts across other tracked items
+
+## AB Test Data Overview
+- Dates of Collection:
+  - 2021-01-28 to 2021-04-12 
+- ~20,000 records
+
+
+```{r, fig.width=5, fig.height=5, echo=FALSE}
+treatment_groups_all_data = ab_test_data %>% count(treatment_plan.group)
+treatment_groups_all_data$percent =  round(100*treatment_groups_all_data$n/sum(treatment_groups_all_data$n), 1)
+
+pie(
+  treatment_groups_all_data$n,
+  labels = paste(treatment_groups_all_data$treatment_plan.group, sep = " ",
+                 treatment_groups_all_data$percent, "%"), 
+  main = "Treatment Plans by Percentage"
+)
+```
+
+## Feature Engineering
+- Created columns to measure time between campaign creation and several other time measures
+- Created **PURCHASED** column
+  - marked TRUE if a `purchase_date` was present for a given record  
+  
+<br>
+
+```{r}
+target_columns = c(
+  "treatment_plan.group",
+  "treatment_plan.time_between_campaign_start_and_consultation_completed",
+  "treatment_plan.time_between_campaign_start_and_viewed_treatment_plan",
+  "treatment_plan.time_between_campaign_start_and_viewed_checkout_page",
+  "treatment_plan.time_between_campaign_start_and_purchase_date",
+  "PURCHASED"  
+)
+
+target_treatment_group_data = target_treatment_group_data[, target_columns]
+
+target_treatment_group_data$treatment_plan.group = as_factor(target_treatment_group_data$treatment_plan.group)
+
+
+treatment_purchased_summary = target_treatment_group_data %>% 
+  count(treatment_plan.group, PURCHASED) %>%
+  group_by(treatment_plan.group) %>%
+  mutate(prop = prop.table(n))
+
+ggplot(treatment_purchased_summary, aes(fill=PURCHASED, y=n, x=treatment_plan.group)) + 
+  geom_bar(position="stack", stat="identity") + 
+  theme_pubclean() +
+  ggtitle("Count PURCHASED by Treatment Plan") +
+  xlab("")
+
+
+treatment_purchased_summary = treatment_purchased_summary %>% 
+  mutate(prop=scales::percent(prop))
+
+kable(treatment_purchased_summary)
+```
+
+## Compute Correlation between
+- Treatment Plan and
+- PURCHASED
+
+```{r}
+polychor(
+  target_treatment_group_data$treatment_plan.group,
+  target_treatment_group_data$PURCHASED,
+  ML=T
+)
+```
+
+## Reverse Engineering Relations Between Treatment Plans and Times
+
+```{r}
+target_treatment_group_data_2 = subset(target_treatment_group_data, select = -c(PURCHASED))
+
+full_model = glm(
+  treatment_plan.group ~ .,
+  data = target_treatment_group_data_2,
+  family='binomial'
+)
+
+summary(full_model)
+plot(full_model)
+```
+
+## Compute Correlation between 
+- Treatment Plan
+- Time between Campaign Start and When the Treatment Plan was Viewed
+
+```{r}
+
+poly_serial_results = polyserial(
+  target_treatment_group_data$treatment_plan.time_between_campaign_start_and_viewed_treatment_plan,
+  target_treatment_group_data$treatment_plan.group,
+  std.err = T
+)
+
+poly_serial_results$cuts
+ 
+```
+
+
